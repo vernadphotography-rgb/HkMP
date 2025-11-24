@@ -1,62 +1,78 @@
-import express from 'express';
-import db from './database.js';
-const app = express();
+import express from "express";
+import sqlite3 from "sqlite3";
+import { open } from "sqlite";
 
+const app = express();
 app.use(express.json());
 
-// ➕ Προσθήκη item
-app.post('/items', (req, res) => {
+// Άνοιγμα ή δημιουργία βάσης δεδομένων
+const dbPromise = open({
+  filename: './database.db',
+  driver: sqlite3.Database
+});
+
+(async () => {
+  const db = await dbPromise;
+
+  // Δημιουργία tables αν δεν υπάρχουν
+  await db.run(`CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  await db.run(`CREATE TABLE IF NOT EXISTS history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER,
+    text TEXT,
+    action TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+})();
+
+// GET /items
+app.get("/items", async (req, res) => {
+  const db = await dbPromise;
+  const items = await db.all("SELECT * FROM items ORDER BY created_at DESC");
+  res.json(items);
+});
+
+// POST /items
+app.post("/items", async (req, res) => {
   const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "Text is required" });
 
-  db.run(
-    `INSERT INTO items (text) VALUES (?)`,
-    [text],
-    function (err) {
-      if (err) return res.status(500).json({ error: err.message });
-      return res.json({ id: this.lastID, text });
-    }
+  const db = await dbPromise;
+  const result = await db.run("INSERT INTO items (text) VALUES (?)", text);
+  const newItem = await db.get("SELECT * FROM items WHERE id = ?", result.lastID);
+  res.json(newItem);
+});
+
+// DELETE /items/:id
+app.delete("/items/:id", async (req, res) => {
+  const { id } = req.params;
+  const db = await dbPromise;
+
+  const item = await db.get("SELECT * FROM items WHERE id = ?", id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  await db.run("DELETE FROM items WHERE id = ?", id);
+  await db.run(
+    "INSERT INTO history (item_id, text, action) VALUES (?, ?, ?)",
+    id, item.text, "deleted"
   );
+  res.json({ success: true });
 });
 
-// 📄 Λίστα όλων των items
-app.get('/items', (req, res) => {
-  db.all(`SELECT * FROM items ORDER BY id DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+// GET /history
+app.get("/history", async (req, res) => {
+  const db = await dbPromise;
+  const history = await db.all("SELECT * FROM history ORDER BY created_at DESC");
+  res.json(history);
 });
 
-// ❌ Διαγραφή item + καταγραφή στο ιστορικό
-app.delete('/items/:id', (req, res) => {
-  const id = req.params.id;
-
-  // Πρώτα βρίσκουμε το αντικείμενο
-  db.get(`SELECT * FROM items WHERE id = ?`, [id], (err, item) => {
-    if (!item) return res.status(404).json({ error: 'Item not found' });
-
-    // Αποθήκευση στο history
-    db.run(
-      `INSERT INTO history (item_id, text) VALUES (?, ?)`,
-      [item.id, item.text]
-    );
-
-    // Διαγραφή από items
-    db.run(`DELETE FROM items WHERE id = ?`, [id], function (err2) {
-      if (err2) return res.status(500).json({ error: err2.message });
-
-      res.json({ message: 'Item deleted', deleted: item });
-    });
-  });
-});
-
-// 📜 Προβολή ιστορικού
-app.get('/history', (req, res) => {
-  db.all(`SELECT * FROM history ORDER BY deleted_at DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
-});
-
-app.listen(3000, () => {
-  console.log('Server running on http://localhost:3000');
+// ⚡ ΣΩΣΤΟ app.listen για Render
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
